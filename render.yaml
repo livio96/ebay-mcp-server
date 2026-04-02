@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: ebay-mcp-server
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    plan: free                    # upgrade to starter/standard for always-on
+
+    envVars:
+      # ── Required ─────────────────────────────────────────────────────────────
+      - key: EBAY_IAF_TOKEN
+        sync: false               # set manually in Render dashboard — never commit this
+
+      # ── Optional ─────────────────────────────────────────────────────────────
+      - key: MCP_AUTH_TOKEN
+        sync: false               # a secret string to guard your MCP endpoint
+
+      - key: EBAY_SITE_ID
+        value: "0"                # 0 = eBay US; 3 = UK; 77 = DE; 71 = FR; 101 = IT
+
+      - key: EBAY_COMPATIBILITY_LEVEL
+        value: "1421"
+
+      # PORT is set automatically by Render — do not set it here
