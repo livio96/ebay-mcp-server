@@ -16,11 +16,17 @@ services:
       - key: NS_ACCOUNT_ID
         sync: false               # your NetSuite account ID (e.g. 1234567)
 
-      - key: NS_CLIENT_ID
-        sync: false               # OAuth 2.0 client ID from NetSuite integration
+      - key: NETSUITE_CONSUMER_KEY
+        sync: false
 
-      - key: NS_CLIENT_SECRET
-        sync: false               # OAuth 2.0 client secret from NetSuite integration
+      - key: NETSUITE_CONSUMER_SECRET
+        sync: false
+
+      - key: NETSUITE_TOKEN_ID
+        sync: false
+
+      - key: NETSUITE_TOKEN_SECRET
+        sync: false
 
       - key: MCP_AUTH_TOKEN
         sync: false               # a secret string to guard your MCP endpoint

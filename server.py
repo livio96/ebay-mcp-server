@@ -6,13 +6,12 @@ including end-to-end workflow tools that orchestrate both systems.
 Hosted on Render.com, used as a remote MCP connector in Claude.
 """
 
-import base64
 import os
-import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 
 import requests
+from requests_oauthlib import OAuth1
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
 from mcp import types
@@ -28,9 +27,11 @@ EBAY_SITE_ID      = os.getenv("EBAY_SITE_ID", "0")
 EBAY_COMPAT_LEVEL = os.getenv("EBAY_COMPATIBILITY_LEVEL", "1421")
 EBAY_IAF_TOKEN    = os.getenv("EBAY_IAF_TOKEN", "")
 
-NS_ACCOUNT_ID    = os.getenv("NS_ACCOUNT_ID", "")       # e.g. 1234567 or 1234567-sb1
-NS_CLIENT_ID     = os.getenv("NS_CLIENT_ID", "")
-NS_CLIENT_SECRET = os.getenv("NS_CLIENT_SECRET", "")
+NS_ACCOUNT_ID       = os.getenv("NS_ACCOUNT_ID", "")
+NS_CONSUMER_KEY     = os.getenv("NETSUITE_CONSUMER_KEY", "")
+NS_CONSUMER_SECRET  = os.getenv("NETSUITE_CONSUMER_SECRET", "")
+NS_TOKEN_ID         = os.getenv("NETSUITE_TOKEN_ID", "")
+NS_TOKEN_SECRET     = os.getenv("NETSUITE_TOKEN_SECRET", "")
 
 MCP_AUTH_TOKEN = os.getenv("MCP_AUTH_TOKEN", "")
 PORT           = int(os.getenv("PORT", "8000"))
@@ -88,51 +89,29 @@ def _t(el: ET.Element, path: str, default: str = "N/A") -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class NetSuiteClient:
-    def __init__(self):
-        self._access_token = None
-        self._token_expiry = 0
-
-    def _subdomain(self) -> str:
-        # 1234567 → 1234567   |   1234567_SB1 → 1234567-sb1
-        return NS_ACCOUNT_ID.lower().replace("_", "-")
+    """NetSuite REST API client using Token-Based Authentication (OAuth 1.0a / HMAC-SHA256)."""
 
     @property
     def base_url(self) -> str:
-        return f"https://{self._subdomain()}.suitetalk.api.netsuite.com/services/rest/record/v1"
+        # Account ID 1234567 → 1234567.suitetalk.api.netsuite.com
+        # Sandbox  1234567_SB1 → 1234567-sb1.suitetalk.api.netsuite.com
+        subdomain = NS_ACCOUNT_ID.lower().replace("_", "-")
+        return f"https://{subdomain}.suitetalk.api.netsuite.com/services/rest/record/v1"
 
-    @property
-    def _token_url(self) -> str:
-        return f"https://{self._subdomain()}.suitetalk.api.netsuite.com/services/rest/auth/oauth2/v1/token"
-
-    def _ensure_token(self) -> str:
-        if self._access_token and time.time() < self._token_expiry - 60:
-            return self._access_token
-        creds = base64.b64encode(f"{NS_CLIENT_ID}:{NS_CLIENT_SECRET}".encode()).decode()
-        r = requests.post(
-            self._token_url,
-            headers={
-                "Authorization": f"Basic {creds}",
-                "Content-Type":  "application/x-www-form-urlencoded",
-            },
-            data="grant_type=client_credentials&scope=rest_webservices",
-            timeout=15,
+    def _auth(self) -> OAuth1:
+        return OAuth1(
+            client_key=NS_CONSUMER_KEY,
+            client_secret=NS_CONSUMER_SECRET,
+            resource_owner_key=NS_TOKEN_ID,
+            resource_owner_secret=NS_TOKEN_SECRET,
+            signature_method="HMAC-SHA256",
+            realm=NS_ACCOUNT_ID,
         )
-        r.raise_for_status()
-        data = r.json()
-        self._access_token = data["access_token"]
-        self._token_expiry  = time.time() + data.get("expires_in", 3600)
-        return self._access_token
-
-    def _h(self) -> dict:
-        return {
-            "Authorization": f"Bearer {self._ensure_token()}",
-            "Content-Type":  "application/json",
-        }
 
     def query(self, record_type: str, q: str, limit: int = 50) -> list:
         r = requests.get(
             f"{self.base_url}/{record_type}",
-            headers=self._h(),
+            auth=self._auth(),
             params={"q": q, "limit": limit},
             timeout=30,
         )
@@ -142,7 +121,7 @@ class NetSuiteClient:
     def get(self, record_type: str, record_id: str) -> dict:
         r = requests.get(
             f"{self.base_url}/{record_type}/{record_id}",
-            headers=self._h(),
+            auth=self._auth(),
             params={"expandSubResources": "true"},
             timeout=30,
         )
@@ -152,7 +131,7 @@ class NetSuiteClient:
     def create(self, record_type: str, fields: dict) -> str:
         r = requests.post(
             f"{self.base_url}/{record_type}",
-            headers=self._h(),
+            auth=self._auth(),
             json=fields,
             timeout=30,
         )
@@ -163,7 +142,7 @@ class NetSuiteClient:
     def update(self, record_type: str, record_id: str, fields: dict) -> None:
         r = requests.patch(
             f"{self.base_url}/{record_type}/{record_id}",
-            headers=self._h(),
+            auth=self._auth(),
             json=fields,
             timeout=30,
         )
@@ -172,7 +151,7 @@ class NetSuiteClient:
     def delete(self, record_type: str, record_id: str) -> None:
         r = requests.delete(
             f"{self.base_url}/{record_type}/{record_id}",
-            headers=self._h(),
+            auth=self._auth(),
             timeout=30,
         )
         r.raise_for_status()
@@ -1041,6 +1020,6 @@ app = Starlette(
 if __name__ == "__main__":
     if not EBAY_IAF_TOKEN:
         print("WARNING: EBAY_IAF_TOKEN is not set.")
-    if not NS_ACCOUNT_ID:
-        print("WARNING: NS_ACCOUNT_ID is not set.")
+    if not all([NS_ACCOUNT_ID, NS_CONSUMER_KEY, NS_CONSUMER_SECRET, NS_TOKEN_ID, NS_TOKEN_SECRET]):
+        print("WARNING: One or more NetSuite TBA credentials are not set.")
     uvicorn.run(app, host="0.0.0.0", port=PORT)
