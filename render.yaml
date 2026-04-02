@@ -12,6 +12,16 @@ services:
         sync: false               # set manually in Render dashboard — never commit this
 
       # ── Optional ─────────────────────────────────────────────────────────────
+      # ── NetSuite ──────────────────────────────────────────────────────────────
+      - key: NS_ACCOUNT_ID
+        sync: false               # your NetSuite account ID (e.g. 1234567)
+
+      - key: NS_CLIENT_ID
+        sync: false               # OAuth 2.0 client ID from NetSuite integration
+
+      - key: NS_CLIENT_SECRET
+        sync: false               # OAuth 2.0 client secret from NetSuite integration
+
       - key: MCP_AUTH_TOKEN
         sync: false               # a secret string to guard your MCP endpoint
 
