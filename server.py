@@ -92,11 +92,15 @@ class NetSuiteClient:
     """NetSuite REST API client using Token-Based Authentication (OAuth 1.0a / HMAC-SHA256)."""
 
     @property
-    def base_url(self) -> str:
+    def _host(self) -> str:
         # Account ID 1234567 → 1234567.suitetalk.api.netsuite.com
         # Sandbox  1234567_SB1 → 1234567-sb1.suitetalk.api.netsuite.com
         subdomain = NS_ACCOUNT_ID.lower().replace("_", "-")
-        return f"https://{subdomain}.suitetalk.api.netsuite.com/services/rest/record/v1"
+        return f"https://{subdomain}.suitetalk.api.netsuite.com"
+
+    @property
+    def base_url(self) -> str:
+        return f"{self._host}/services/rest/record/v1"
 
     def _auth(self) -> OAuth1:
         return OAuth1(
@@ -155,6 +159,19 @@ class NetSuiteClient:
             timeout=30,
         )
         r.raise_for_status()
+
+    def suiteql(self, q: str, limit: int = 100, offset: int = 0) -> dict:
+        """Run a SuiteQL query. Returns the full response dict (items, hasMore, totalResults, etc.)."""
+        r = requests.post(
+            f"{self._host}/services/rest/query/v1/suiteql",
+            auth=self._auth(),
+            params={"limit": min(limit, 1000), "offset": offset},
+            headers={"Prefer": "transient"},
+            json={"q": q},
+            timeout=60,
+        )
+        r.raise_for_status()
+        return r.json()
 
 
 ns = NetSuiteClient()
@@ -228,16 +245,41 @@ async def list_tools() -> list[types.Tool]:
         # ── NetSuite low-level tools ─────────────────────────────────────────
 
         types.Tool(
-            name="ns_query_records",
+            name="ns_suiteql",
             description=(
-                "Query any NetSuite custom record type with a filter. "
-                "Use SuiteQL-style syntax, e.g. 'custrecordsku_text IS \"ABC\" AND isinactive IS false'."
+                "Run a SuiteQL query against NetSuite. Accepts raw SQL with JOINs across any "
+                "NetSuite tables — transaction, transactionline, item, customer, employee, vendor, "
+                "vendorbill, salesorder, customrecord_*, etc. Use this for any read-only lookup or "
+                "report-style query that needs joins or filters across record types. "
+                "Examples: "
+                "SELECT id, tranid, trandate, entity FROM transaction WHERE type = 'SalesOrd' AND trandate > '01/01/2026'; "
+                "SELECT i.itemid, i.displayname FROM item i WHERE i.itemid = 'ABC-123'; "
+                "SELECT id, companyname, email FROM customer WHERE email LIKE '%@telquestintl.com'."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_type": {"type": "string", "description": "Internal ID of the custom record type, e.g. customrecord_celigo_ebayio_item_account."},
-                    "query":       {"type": "string", "description": "SuiteQL WHERE clause filter."},
+                    "query":  {"type": "string",  "description": "SuiteQL SELECT statement (NetSuite SQL dialect)."},
+                    "limit":  {"type": "integer", "default": 100, "description": "Max rows per request (NetSuite caps at 1000)."},
+                    "offset": {"type": "integer", "default": 0,   "description": "Row offset for paging."},
+                },
+                "required": ["query"],
+            },
+        ),
+        types.Tool(
+            name="ns_query_records",
+            description=(
+                "Query any NetSuite record type (standard or custom) with a simple WHERE-clause filter. "
+                "Uses the REST record search endpoint — limited to one record type at a time and a "
+                "subset of operators. For anything more complex (joins, aggregates, cross-record filters) "
+                "use ns_suiteql instead. "
+                "Example: 'custrecordsku_text IS \"ABC\" AND isinactive IS false'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "record_type": {"type": "string", "description": "Record type internal ID, e.g. customer, salesOrder, inventoryItem, customrecord_celigo_ebayio_item_account."},
+                    "query":       {"type": "string", "description": "REST WHERE-clause filter."},
                     "limit":       {"type": "integer", "default": 20, "description": "Max records to return (max 100)."},
                 },
                 "required": ["record_type", "query"],
@@ -245,11 +287,15 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="ns_get_record",
-            description="Get a specific NetSuite custom record by its internal ID.",
+            description=(
+                "Get any NetSuite record (standard or custom) by internal ID. "
+                "Works with customer, salesOrder, invoice, inventoryItem, vendorBill, employee, "
+                "purchaseOrder, customrecord_*, etc."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_type": {"type": "string", "description": "Custom record type internal ID."},
+                    "record_type": {"type": "string", "description": "Record type internal ID, e.g. customer, salesOrder, inventoryItem, customrecord_*."},
                     "record_id":   {"type": "string", "description": "NetSuite internal record ID."},
                 },
                 "required": ["record_type", "record_id"],
@@ -257,36 +303,46 @@ async def list_tools() -> list[types.Tool]:
         ),
         types.Tool(
             name="ns_update_record",
-            description="Update fields on a NetSuite custom record by internal ID.",
+            description=(
+                "Update fields on any NetSuite record (standard or custom) by internal ID. "
+                "Works with customer, salesOrder, invoice, inventoryItem, vendorBill, customrecord_*, etc."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_type": {"type": "string", "description": "Custom record type internal ID."},
+                    "record_type": {"type": "string", "description": "Record type internal ID, e.g. customer, salesOrder, inventoryItem, customrecord_*."},
                     "record_id":   {"type": "string", "description": "NetSuite internal record ID."},
-                    "fields":      {"type": "object", "description": "Key/value pairs of fields to update, e.g. {\"custrecord_celigo_ebay_listing_ended\": true}."},
+                    "fields":      {"type": "object", "description": "Key/value pairs of fields to update, e.g. {\"companyName\": \"Acme Corp\"} or {\"custrecord_celigo_ebay_listing_ended\": true}."},
                 },
                 "required": ["record_type", "record_id", "fields"],
             },
         ),
         types.Tool(
             name="ns_create_record",
-            description="Create a new NetSuite custom record.",
+            description=(
+                "Create a new NetSuite record (standard or custom). "
+                "Works with customer, salesOrder, invoice, inventoryItem, vendorBill, customrecord_*, etc. "
+                "Custom records typically require a 'name' field."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_type": {"type": "string", "description": "Custom record type internal ID."},
-                    "fields":      {"type": "object", "description": "Field values for the new record. Include 'name' field (required by NetSuite)."},
+                    "record_type": {"type": "string", "description": "Record type internal ID, e.g. customer, salesOrder, customrecord_*."},
+                    "fields":      {"type": "object", "description": "Field values for the new record."},
                 },
                 "required": ["record_type", "fields"],
             },
         ),
         types.Tool(
             name="ns_delete_record",
-            description="Delete a NetSuite custom record by internal ID.",
+            description=(
+                "Delete any NetSuite record (standard or custom) by internal ID. "
+                "Works with customer, salesOrder, inventoryItem, customrecord_*, etc."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "record_type": {"type": "string", "description": "Custom record type internal ID."},
+                    "record_type": {"type": "string", "description": "Record type internal ID."},
                     "record_id":   {"type": "string", "description": "NetSuite internal record ID."},
                 },
                 "required": ["record_type", "record_id"],
@@ -476,6 +532,7 @@ def _dispatch(name: str, args: dict) -> str:
         "relist_item_by_sku":     _relist_item_by_sku,
         "update_price_by_sku":    _update_price_by_sku,
         # netsuite
+        "ns_suiteql":             _ns_suiteql,
         "ns_query_records":       _ns_query_records,
         "ns_get_record":          _ns_get_record,
         "ns_update_record":       _ns_update_record,
@@ -636,6 +693,31 @@ def _update_price_by_sku(args: dict) -> str:
 # ══════════════════════════════════════════════════════════════════════════════
 # NetSuite low-level tools
 # ══════════════════════════════════════════════════════════════════════════════
+
+def _ns_suiteql(args: dict) -> str:
+    query  = args["query"]
+    limit  = min(args.get("limit", 100), 1000)
+    offset = args.get("offset", 0)
+
+    result = ns.suiteql(query, limit, offset)
+    items  = result.get("items", [])
+
+    has_more     = result.get("hasMore", False)
+    total        = result.get("totalResults", "?")
+    cur_offset   = result.get("offset", offset)
+
+    if not items:
+        return f"No rows returned.\nQuery: {query}"
+
+    lines = [
+        f"Rows: {len(items)}  |  offset: {cur_offset}  |  totalResults: {total}  |  hasMore: {has_more}",
+        "",
+    ]
+    for row in items:
+        clean = {k: v for k, v in row.items() if k != "links"}
+        lines.append(f"  {clean}")
+    return "\n".join(lines)
+
 
 def _ns_query_records(args: dict) -> str:
     record_type = args["record_type"]
